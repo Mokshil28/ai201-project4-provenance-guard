@@ -84,9 +84,10 @@ confidence = raw_conf * (1 - 0.5 * disagree)        # disagreement halves conf a
   into a false verdict. We *halve* confidence at the extreme (not zero it) so a
   confident LLM isn't fully neutralized by a lukewarm stylometric reading; the
   asymmetric thresholds below carry the main false-positive protection.
-- If the LLM signal is unavailable, `p_ai = s_stylo` and confidence is capped at
-  `0.45` — below the `0.50` bar the AI verdict requires — so a lone stylometric
-  heuristic can never, on its own, flag content as AI.
+- If the LLM signal is unavailable, `p_ai = s_stylo` and confidence is capped
+  into the LOW band (`0.34`) so degraded, stylometric-only mode always returns
+  **uncertain** — without the semantic signal the system makes no confident
+  attribution claim in either direction.
 
 ---
 
@@ -114,12 +115,18 @@ Confidence bands (human meaning):
 | Verdict | Rule |
 |---|---|
 | **likely_human** | `p_ai ≤ 0.45` **and** `confidence ≥ 0.35` |
-| **likely_ai** | `p_ai ≥ 0.65` **and** `confidence ≥ 0.50` (stricter both ways) |
+| **likely_ai** | `p_ai ≥ 0.65` **and** `confidence ≥ 0.40` |
 | **uncertain** | everything else |
 
-This makes the "uncertain" band **wider on the AI side**: borderline work falls
-into *uncertain*, not *likely_ai*. A single weak signal (confidence ≤ 0.50) can
-never trigger the AI verdict.
+The asymmetry lives in `p_ai`: the AI verdict needs `p_ai ≥ 0.65` (well above the
+0.5 midpoint), which in practice requires **both** signals to lean AI — a lone
+misfiring signal can't clear it. The human verdict has an easier bar (`p_ai ≤
+0.45`) because a false "AI" flag is the worse error. This makes the "uncertain"
+band **wider on the AI side**: borderline and single-signal-flagged work falls
+into *uncertain*, not *likely_ai*. (The AI confidence bar is 0.40 rather than
+0.35 because the real LLM is conservative — it rarely exceeds ~0.8 — so AI-side
+confidence is structurally lower; 0.40 keeps `likely_ai` reachable for content
+both signals flag while `p_ai ≥ 0.65` carries the false-positive protection.)
 
 **This is not a binary flip at 0.5.** Worked examples:
 

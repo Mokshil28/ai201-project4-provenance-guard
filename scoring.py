@@ -19,9 +19,9 @@ WEIGHT_STYLO = 0.35
 # How much total signal disagreement can cut confidence (0.5 => halve at most).
 DISAGREEMENT_PENALTY = 0.5
 
-# A lone stylometric signal can never reach the AI verdict (needs conf >= 0.50),
-# so it can never falsely flag AI on its own. Kept below that threshold on purpose.
-SINGLE_SIGNAL_CONF_CAP = 0.45
+# Without the semantic LLM signal we make no confident claim: cap confidence into
+# the LOW band so degraded (stylometric-only) mode always returns "uncertain".
+SINGLE_SIGNAL_CONF_CAP = 0.34
 # Too-short text: cap confidence into the LOW band so we never over-claim.
 SHORT_TEXT_CONF_CAP = 0.34
 
@@ -35,9 +35,12 @@ def confidence_band(confidence):
 
 
 def _verdict(p_ai, confidence):
+    # Asymmetric on purpose: the AI verdict needs p_ai well above the midpoint
+    # (>= 0.65), which realistically requires BOTH signals to agree it's AI. The
+    # human verdict has an easier bar because a false "AI" flag is the worse error.
     if p_ai <= 0.45 and confidence >= 0.35:
         return "likely_human"
-    if p_ai >= 0.65 and confidence >= 0.50:   # stricter both ways
+    if p_ai >= 0.65 and confidence >= 0.40:
         return "likely_ai"
     return "uncertain"
 
