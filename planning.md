@@ -115,18 +115,18 @@ Confidence bands (human meaning):
 | Verdict | Rule |
 |---|---|
 | **likely_human** | `p_ai ≤ 0.45` **and** `confidence ≥ 0.35` |
-| **likely_ai** | `p_ai ≥ 0.65` **and** `confidence ≥ 0.40` |
+| **likely_ai** | `p_ai ≥ 0.65` **and** `confidence ≥ 0.35` |
 | **uncertain** | everything else |
 
-The asymmetry lives in `p_ai`: the AI verdict needs `p_ai ≥ 0.65` (well above the
-0.5 midpoint), which in practice requires **both** signals to lean AI — a lone
-misfiring signal can't clear it. The human verdict has an easier bar (`p_ai ≤
-0.45`) because a false "AI" flag is the worse error. This makes the "uncertain"
-band **wider on the AI side**: borderline and single-signal-flagged work falls
-into *uncertain*, not *likely_ai*. (The AI confidence bar is 0.40 rather than
-0.35 because the real LLM is conservative — it rarely exceeds ~0.8 — so AI-side
-confidence is structurally lower; 0.40 keeps `likely_ai` reachable for content
-both signals flag while `p_ai ≥ 0.65` carries the false-positive protection.)
+Both non-uncertain verdicts need `confidence ≥ 0.35` (at least the MODERATE
+band); the **asymmetry lives entirely in `p_ai`**. The human band reaches up to
+`0.45` (just below the 0.5 midpoint), while the AI band starts at `0.65` (well
+above it) — so it takes stronger, *agreeing* evidence to flag AI than to call
+something human, because a false "AI" flag is the worse error. In practice
+`p_ai ≥ 0.65` requires **both** signals to lean AI; a lone misfiring signal
+(e.g. the LLM over-flagging formal human writing at 0.7 while stylometry
+disagrees) lands its `p_ai` below 0.65 and stays *uncertain*. This makes the
+"uncertain" band **wider on the AI side**.
 
 **This is not a binary flip at 0.5.** Worked examples:
 
@@ -136,9 +136,9 @@ both signals flag while `p_ai ≥ 0.65` carries the false-positive protection.)
 | 0.10 | 0.08 | 0.087 | 0.02 | 0.818 | likely_human (high) |
 | 0.80 | 0.30 | 0.475 | 0.50 | 0.038 | uncertain (signals clash — the FP case) |
 | 0.55 | 0.60 | 0.583 | 0.05 | 0.161 | uncertain (near midpoint) |
-| 0.70 | 0.68 | 0.687 | 0.02 | 0.370 | uncertain (leans AI but conf < 0.50) |
+| 0.70 | 0.68 | 0.687 | 0.02 | 0.370 | likely_ai (both signals agree AI) |
 | 0.61 | 0.90 | 0.799 | 0.29 | 0.510 | likely_ai (crude/templated AI, signals broadly agree) |
-| 0.41 | 0.88 | 0.716 | 0.47 | 0.330 | uncertain (rich-vocab AI; stylometry disagrees → honest uncertain) |
+| 0.41 | 0.88 | 0.716 | 0.47 | 0.330 | uncertain (rich-vocab AI; stylometry disagrees, conf < 0.35 → honest uncertain) |
 
 **How we'll test that scores are meaningful (M4):** run a fixed corpus of
 clearly-human samples (published poems/essays), clearly-AI samples (raw model
@@ -150,29 +150,33 @@ reachable. Documented in the README with the sample outputs.
 
 ## 3. Transparency Label Design
 
-Three variants. Non-technical, plain language. AI wording is **hedged and never
-accusatory** ("signs of", "estimate", not "this IS AI"). Each label carries the
-numeric confidence so a reader can gauge it. `{confidence_pct}` is
-`round(confidence * 100)`.
+Three variants, one per verdict. Non-technical, plain language. AI wording is
+**hedged and never accusatory** ("signs of", "estimate", not "this IS AI"). Each
+label carries the numeric confidence so a reader can gauge it.
+`{confidence_pct}` is `round(confidence * 100)` and `{band}` is the confidence
+word (HIGH / MODERATE / LOW) from the §2 bands.
 
-### Variant A — High-confidence AI (`likely_ai`)
-> ⚠️ **Likely AI-generated.** Our automated analysis found strong signs this text
-> may have been produced with AI assistance (confidence: **{confidence_pct}% —
-> HIGH**). This is an estimate, not a certainty, and it is not an accusation. If
-> you're the creator and this is wrong, you can appeal and a human will review it.
+### Variant A — AI-leaning (`likely_ai`)
+> ⚠️ **Likely AI-generated.** Our automated analysis found signs this text may
+> have been produced with AI assistance (confidence: **{confidence_pct}% —
+> {band}**). This is an estimate, not a certainty, and it is not an accusation.
+> If you're the creator and this is wrong, you can appeal and a human will
+> review it.
 
-### Variant B — High-confidence human (`likely_human`)
-> ✓ **Likely human-written.** Our automated analysis found strong signs this text
-> was written by a person (confidence: **{confidence_pct}% — HIGH**). This is an
+### Variant B — Human-leaning (`likely_human`)
+> ✓ **Likely human-written.** Our automated analysis found signs this text was
+> written by a person (confidence: **{confidence_pct}% — {band}**). This is an
 > automated estimate, not a guarantee of authorship.
 
 ### Variant C — Uncertain (`uncertain`)
 > ❔ **Attribution uncertain.** Our automated analysis couldn't confidently
 > determine whether this text was written by a person or generated with AI
-> (confidence: **{confidence_pct}% — LOW**). Please treat the origin as
+> (confidence: **{confidence_pct}% — {band}**). Please treat the origin as
 > inconclusive. No attribution claim is being made.
 
-The confidence word (HIGH/MODERATE/LOW) is derived from the §2 confidence bands.
+The `{band}` word is derived from the confidence value (§2), so the label text
+changes with the score — e.g. a `likely_ai` verdict typically shows MODERATE, an
+`uncertain` verdict shows LOW.
 
 ---
 

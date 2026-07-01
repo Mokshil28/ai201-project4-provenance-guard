@@ -87,6 +87,38 @@ def get_submission(content_id):
     return json.loads(row["data"]) if row else None
 
 
+def update_status(content_id, status):
+    """Flip a submission's status (e.g. 'classified' -> 'under_review')."""
+    with _connect() as conn:
+        # keep the JSON snapshot's status field in sync too
+        row = conn.execute(
+            "SELECT data FROM submissions WHERE content_id = ?", (content_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        data = json.loads(row["data"])
+        data["status"] = status
+        conn.execute(
+            "UPDATE submissions SET status = ?, data = ? WHERE content_id = ?",
+            (status, json.dumps(data), content_id),
+        )
+        return True
+
+
+def save_appeal(appeal):
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO appeals (appeal_id, content_id, reason, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                appeal["appeal_id"],
+                appeal["content_id"],
+                appeal.get("reason"),
+                appeal.get("created_at"),
+            ),
+        )
+
+
 def add_audit(entry_type, content_id, entry):
     """Append a structured entry to the audit log."""
     with _connect() as conn:

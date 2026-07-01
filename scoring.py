@@ -35,12 +35,14 @@ def confidence_band(confidence):
 
 
 def _verdict(p_ai, confidence):
-    # Asymmetric on purpose: the AI verdict needs p_ai well above the midpoint
-    # (>= 0.65), which realistically requires BOTH signals to agree it's AI. The
-    # human verdict has an easier bar because a false "AI" flag is the worse error.
+    # Any non-uncertain verdict needs confidence >= 0.35 (at least MODERATE band).
+    # The human/AI asymmetry lives entirely in p_ai: the human band reaches to
+    # 0.45 (just below the 0.5 midpoint) while the AI band starts at 0.65 (well
+    # above it), so it takes stronger, agreeing evidence to flag AI than human --
+    # because falsely flagging a human as AI is the worse error.
     if p_ai <= 0.45 and confidence >= 0.35:
         return "likely_human"
-    if p_ai >= 0.65 and confidence >= 0.40:
+    if p_ai >= 0.65 and confidence >= 0.35:
         return "likely_ai"
     return "uncertain"
 
