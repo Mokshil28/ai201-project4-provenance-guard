@@ -10,8 +10,38 @@ Design priority throughout: **a false positive (flagging a human's work as AI)
 is worse than a false negative.** Thresholds, weights, and label wording are all
 biased toward that asymmetry.
 
-The full design spec and architecture diagrams live in
+The full design spec and architecture diagrams (both flows, ASCII) live in
 [planning.md](planning.md).
+
+---
+
+## Architecture overview
+
+The path a single submission takes from input to the label a reader sees:
+
+1. **`POST /submit`** receives the raw text. It first passes the **rate limiter**
+   — floods are rejected with `429` *before* any detection runs, so abuse costs
+   no LLM calls ([app.py](app.py)).
+2. The text is scored independently by **Signal 1 (stylometric)** — a structural
+   `[0,1]` AI-likeness score — and **Signal 2 (LLM/Groq)** — a semantic `[0,1]`
+   probability plus rationale ([signals.py](signals.py)).
+3. **Confidence scoring** blends the two into `p_ai` (which way) and `confidence`
+   (how much to trust it); signal disagreement lowers confidence
+   ([scoring.py](scoring.py)).
+4. The verdict + confidence select one of **three transparency labels**, with the
+   confidence % and band word interpolated ([labels.py](labels.py)).
+5. The full decision — both signal scores, `p_ai`, confidence, verdict, label — is
+   written to the **audit log** and returned as JSON ([storage.py](storage.py)).
+
+**Appeal path:** `POST /appeal` looks up the decision by `content_id`, records the
+creator's reasoning, flips status to `under_review`, and logs the appeal
+*alongside* the original decision (nothing overwritten) for a human reviewer.
+
+```
+POST /submit → rate limiter → [stylometric ‖ LLM] → confidence scoring
+             → transparency label → audit log → JSON response
+POST /appeal → lookup → status=under_review → audit log → confirmation
+```
 
 ---
 
@@ -125,6 +155,32 @@ Both non-uncertain verdicts need `confidence ≥ 0.35`; the asymmetry lives in
 human band reaches to `0.45` — so it takes stronger, *agreeing* evidence to flag
 AI than to call something human. This is not a binary flip at 0.5: a 0.51 lands
 in the wide "uncertain" band, a 0.95 does not.
+
+### Why this scoring approach
+The score is a **design decision before a technical one**: we decided what we
+wanted the output to *mean* to a reader, then built the math to produce it. We
+wanted two things a single number can't express — direction and trust — so we
+kept `p_ai` and `confidence` separate. We wanted disagreement between a
+content-blind statistic and a content-aware model to *reduce* trust rather than
+average into a false verdict, so confidence is scaled by agreement. And because a
+false AI accusation is the worse error, we put the human/AI asymmetry in `p_ai`
+rather than making the label a coin-flip at 0.5.
+
+### Two example submissions (actual live scores)
+The scoring produces meaningful variation, not a constant:
+
+- **Higher-confidence — `likely_human`, confidence `0.638`.** A vivid, bursty
+  first-person passage (varied sentence lengths, rich vocabulary, em-dashes and
+  colons). Both signals agreed it was human (stylo `0.096`, llm `0.20`,
+  `p_ai 0.164`); high agreement kept confidence near the top of the achievable
+  range.
+- **Lower-confidence — `uncertain`, confidence `0.147`.** A polished AI essay
+  with rich vocabulary. The LLM flagged it (`0.70`) but stylometry read the
+  varied vocabulary as human (`0.379`); the signals disagreed, so confidence
+  collapsed and the system declined to accuse (`p_ai 0.588`).
+
+Same system, `0.638` vs `0.147` — a 4× difference driven by whether the two
+signals agree.
 
 ### How we tested that scores are meaningful
 We ran a fixed set of inputs spanning the range and checked the scores match
@@ -322,18 +378,107 @@ attribution claim in either direction, and the failure is recorded in the log.
 
 ---
 
-## Anticipated edge cases
+## Known limitations
 
-- **Minimalist / repetitive human poetry** — stylometry flags it AI-like, but the
-  LLM reads it as human; the disagreement drives the verdict to *uncertain*, not
-  a false AI accusation.
-- **Very short text (< ~25 words)** — stylometric statistics are unstable; the
-  signal is flagged and confidence is capped LOW.
-- **Non-native-English human writing** — the LLM can over-flag formal non-native
-  prose; the `p_ai ≥ 0.65` bar plus the appeal path limit the harm (this is the
-  exact scenario in the sample appeal above).
-- **Human-edited AI drafts** — genuinely mixed provenance; these correctly land
-  in *uncertain*.
+AI-text detection is an unsolved problem, and this system is honest about that.
+Specific content it will likely misclassify, tied to concrete properties of the
+signals:
+
+- **Sophisticated AI prose with rich vocabulary → *uncertain* (a false
+  negative).** This is the clearest failure, and it's structural. The stylometric
+  signal's type-token-ratio sub-metric treats diverse vocabulary as human-like.
+  Modern LLMs write with wide, varied vocabulary, so their output scores *low* on
+  stylometry (looks human) even when the LLM signal correctly flags it. The two
+  signals then disagree, confidence collapses, and the verdict is *uncertain*
+  rather than *likely_ai*. Concretely: the polished AI essay in the examples above
+  scored stylo `0.379` (reads human) despite llm `0.70`. The system won't falsely
+  clear it as human, but it also won't confidently catch it — a direct
+  consequence of stylometry being content-blind.
+- **Formal non-native-English human writing → risk of *likely_ai* (the costly
+  false positive).** The LLM signal associates grammatically-regular, formal
+  prose with AI. If it returns a high enough score (≈0.75+) for genuinely human
+  non-native writing, `p_ai` can clear the 0.65 bar. The `p_ai ≥ 0.65`
+  threshold and the appeal path are the mitigations, not a fix — this is exactly
+  the scenario the sample appeal above contests.
+- **Very short text (< ~25 words)** — stylometric variance and TTR are
+  statistically meaningless on 2–3 sentences, so the signal is flagged and
+  confidence capped LOW.
+- **Human-edited AI drafts** — genuinely mixed provenance; correctly land in
+  *uncertain* (arguably the honest answer rather than a limitation).
+
+**What I'd change deploying this for real:** (1) replace the hand-tuned
+stylometric thresholds with a small classifier calibrated on a labeled human/AI
+corpus, so `p_ai` reflects real probabilities rather than heuristic mappings;
+(2) add a third signal (e.g. a perplexity-based detector) so a single misfiring
+signal is outvoted rather than dragging confidence to *uncertain*; (3) log
+reviewer outcomes on appeals and feed them back as calibration data; (4) move
+rate-limit storage from in-memory to Redis so limits hold across multiple
+workers.
+
+---
+
+## Spec reflection
+
+**One way the spec helped.** Writing the confidence formula, verdict thresholds,
+and a *worked-examples table* in `planning.md` §2 *before* coding meant the
+scoring had a concrete target. I turned that table into an automated test
+(`SPEC TABLE == CODE`), which immediately caught when generated scoring code
+diverged from the intended ranges. Deciding "what should 0.5 mean to a user"
+on paper first is the reason the label communicates uncertainty instead of
+forcing a binary.
+
+**One way the implementation diverged, and why.** The spec originally set
+`confidence = raw_conf × agreement` with weights 0.6/0.4, and an AI verdict
+requiring `confidence ≥ 0.50`. When I tested against the *real* Groq LLM
+(rather than my imagined scores), I found it's conservative — it rarely exceeds
+~0.8 — so with the original formula `likely_ai` was practically unreachable:
+even blatant AI landed in *uncertain*. I diverged to weights 0.65/0.35, a
+softer disagreement penalty (`× (1 − 0.5·disagree)`, which halves rather than
+zeroes confidence), and a `0.35` verdict bar, then updated `planning.md` to
+match so spec and code stayed in lockstep. The lesson: the spec's *shape* was
+right, but its constants assumed an LLM more decisive than the real one.
+
+---
+
+## AI usage
+
+This project was built with an AI coding assistant. Specific instances of what I
+directed, what it produced, and what I revised or overrode:
+
+1. **Two-signal confidence scoring.** I gave it the `planning.md` signals and
+   uncertainty sections and asked it to implement the combine function. It
+   produced working code matching the original spec — but when I tested against
+   the live Groq LLM, `likely_ai` was unreachable because the model is
+   conservative. I **overrode the calibration**: reweighted to 0.65/0.35,
+   changed the disagreement penalty from "multiply by agreement" (which zeroed
+   confidence on disagreement) to "halve at most," and lowered the verdict bar to
+   0.35 — then updated the spec and its test table to match.
+
+2. **Stylometric signal.** I directed it to compute sentence-length variance,
+   type-token ratio, and punctuation variety and combine them. Its first version
+   mapped TTR non-monotonically ("AI sits in a mid-range"), which **contradicted
+   my own edge case** (a repetitive poem should read AI-like). I revised the TTR
+   sub-metric to a monotonic mapping (low diversity → AI-like) and fixed the spec
+   table to match, so the code and the documented edge case agreed.
+
+3. **Rate limiting.** I asked it to add Flask-Limiter to `/submit` at 10/min;
+   100/day. The limiter worked, but my rate-limit test showed stale counts. I
+   **diagnosed and overrode**: Flask's debug reloader spawns a second process
+   with its own in-memory counter, so I set `use_reloader=False` to keep limits
+   accurate on a single process, and documented why inline.
+
+4. **Single-signal fallback bug.** The generated fallback capped confidence at
+   0.50, but the AI verdict also triggered at 0.50 — meaning a lone stylometric
+   signal (no LLM) could flag content as AI. I caught this in testing and
+   **tightened the cap** so degraded mode always returns *uncertain* — no
+   confident claim without both signals.
+
+---
+
+## Walkthrough video
+
+A short portfolio walkthrough (end-to-end demo + a few design decisions):
+**[link to be added]**
 
 ---
 
