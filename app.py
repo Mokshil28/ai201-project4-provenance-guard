@@ -1,11 +1,12 @@
 """Provenance Guard — Flask API.
 
-Milestone 3: submission endpoint + Signal 1 (stylometric) wired end-to-end,
-structured audit logging, and a /log view.
+Milestone 4: both detection signals (stylometric + LLM) wired end-to-end with
+real two-signal confidence scoring, and an audit log that records each signal's
+individual score alongside the combined result.
 
-Confidence and the transparency label are PLACEHOLDERS here — the real
-two-signal confidence scoring arrives in Milestone 4 and the label variants in
-Milestone 5.
+The transparency label text is still a PLACEHOLDER — the three label variants
+arrive in Milestone 5. The `verdict` (likely_ai / likely_human / uncertain) is
+real as of this milestone.
 """
 
 import uuid
@@ -13,8 +14,9 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
 
+import scoring
 import storage
-from signals import stylometric_score
+from signals import MIN_WORDS_FOR_STYLOMETRY, llm_score, stylometric_score
 
 app = Flask(__name__)
 storage.init_db()
@@ -22,15 +24,6 @@ storage.init_db()
 
 def _now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-
-def _preliminary_attribution(score):
-    """Single-signal placeholder verdict. Superseded by real scoring in M4."""
-    if score >= 0.65:
-        return "likely_ai"
-    if score <= 0.45:
-        return "likely_human"
-    return "uncertain"
 
 
 @app.get("/health")
@@ -50,13 +43,22 @@ def submit():
     content_id = "c_" + uuid.uuid4().hex[:12]
     timestamp = _now_iso()
 
-    # --- Signal 1: stylometric -------------------------------------------
+    # --- Signal 1: stylometric (structural) ------------------------------
     stylo = stylometric_score(text)
     s_stylo = stylo["score"]
 
-    attribution = _preliminary_attribution(s_stylo)
-    # PLACEHOLDER confidence/label — finalized in M4/M5.
-    confidence = round(abs(s_stylo - 0.5) * 2, 3)
+    # --- Signal 2: LLM classifier (semantic) -----------------------------
+    llm = llm_score(text)
+    s_llm = llm["score"]  # None if the LLM was unavailable -> graceful fallback
+
+    # --- Confidence scoring: combine both signals ------------------------
+    short_text = stylo["word_count"] < MIN_WORDS_FOR_STYLOMETRY
+    scored = scoring.combine(s_stylo, s_llm, short_text=short_text)
+
+    attribution = scored["verdict"]
+    confidence = scored["confidence"]
+
+    # PLACEHOLDER label text — the three real variants arrive in Milestone 5.
     label = {
         "variant": attribution,
         "text": "[placeholder label — finalized in Milestone 5]",
@@ -69,16 +71,19 @@ def submit():
         "text": text,
         "attribution": attribution,
         "confidence": confidence,
-        "p_ai": s_stylo,  # single-signal stand-in until M4 blends in the LLM
+        "confidence_band": scored["confidence_band"],
+        "p_ai": scored["p_ai"],
+        "agreement": scored["agreement"],
+        "scoring_mode": scored["mode"],
         "status": "classified",
-        "signals": {"stylometric": stylo},
+        "signals": {"stylometric": stylo, "llm": llm},
         "label": label,
-        "note": "confidence and label are placeholders (M3); real scoring in M4/M5",
+        "note": "label text is a placeholder (M4); real label variants in M5",
     }
 
     storage.save_submission(record)
 
-    # Structured audit entry for this decision.
+    # Structured audit entry — records BOTH signals + the combined result.
     storage.add_audit(
         "decision",
         content_id,
@@ -88,8 +93,13 @@ def submit():
             "timestamp": timestamp,
             "attribution": attribution,
             "confidence": confidence,
+            "confidence_band": scored["confidence_band"],
+            "p_ai": scored["p_ai"],
+            "agreement": scored["agreement"],
+            "scoring_mode": scored["mode"],
             "stylometric_score": s_stylo,
-            "signals": {"stylometric": stylo},
+            "llm_score": s_llm,
+            "signals": {"stylometric": stylo, "llm": llm},
             "status": "classified",
         },
     )

@@ -70,19 +70,23 @@ styles, sensitive to prompt wording, and non-deterministic.
 ### Combining the two signals
 
 ```
-p_ai       = 0.6 * s_llm + 0.4 * s_stylo          # weighted blend, LLM leads
-agreement  = 1 - |s_llm - s_stylo|                 # 1 = perfect agreement, 0 = opposite
+p_ai       = 0.65 * s_llm + 0.35 * s_stylo         # weighted blend, LLM leads
+disagree   = |s_llm - s_stylo|                      # 0 = perfect agreement, 1 = opposite
 raw_conf   = 2 * |p_ai - 0.5|                       # distance from the "no idea" midpoint
-confidence = raw_conf * agreement                   # disagreement DEDUCTS confidence
+confidence = raw_conf * (1 - 0.5 * disagree)        # disagreement halves conf at most
 ```
 
-- **Why LLM weighted higher (0.6):** it reads meaning; stylometry is content-blind.
-- **Why multiply by `agreement`:** if the two signals point opposite ways, that
-  disagreement is itself a signal — we lower confidence rather than average into
-  a false verdict. This is the mechanism that catches the false-positive case.
-- If the LLM signal is unavailable, `p_ai = s_stylo`, `agreement = 1` is *not*
-  assumed — instead confidence is capped at `0.50` (single-signal ceiling) so a
-  lone heuristic can never produce a "high-confidence" verdict.
+- **Why LLM weighted higher (0.65):** it reads meaning; stylometry is
+  content-blind and is the noisier/weaker detector, so it informs rather than
+  dominates.
+- **Why the `(1 - 0.5·disagree)` factor:** if the two signals point opposite ways,
+  that disagreement is itself a signal — we lower confidence rather than average
+  into a false verdict. We *halve* confidence at the extreme (not zero it) so a
+  confident LLM isn't fully neutralized by a lukewarm stylometric reading; the
+  asymmetric thresholds below carry the main false-positive protection.
+- If the LLM signal is unavailable, `p_ai = s_stylo` and confidence is capped at
+  `0.45` — below the `0.50` bar the AI verdict requires — so a lone stylometric
+  heuristic can never, on its own, flag content as AI.
 
 ---
 
@@ -119,13 +123,15 @@ never trigger the AI verdict.
 
 **This is not a binary flip at 0.5.** Worked examples:
 
-| s_stylo | s_llm | p_ai | agreement | confidence | verdict |
+| s_stylo | s_llm | p_ai | disagree | confidence | verdict |
 |---|---|---|---|---|---|
-| 0.90 | 0.92 | 0.912 | 0.98 | 0.807 | likely_ai (high) |
-| 0.10 | 0.08 | 0.088 | 0.98 | 0.807 | likely_human (high) |
-| 0.80 | 0.30 | 0.500 | 0.50 | 0.000 | uncertain (signals clash — the FP case) |
-| 0.55 | 0.60 | 0.580 | 0.95 | 0.152 | uncertain (near midpoint) |
-| 0.70 | 0.68 | 0.688 | 0.98 | 0.369 | uncertain (leans AI but conf < 0.50) |
+| 0.90 | 0.92 | 0.913 | 0.02 | 0.818 | likely_ai (high) |
+| 0.10 | 0.08 | 0.087 | 0.02 | 0.818 | likely_human (high) |
+| 0.80 | 0.30 | 0.475 | 0.50 | 0.038 | uncertain (signals clash — the FP case) |
+| 0.55 | 0.60 | 0.583 | 0.05 | 0.161 | uncertain (near midpoint) |
+| 0.70 | 0.68 | 0.687 | 0.02 | 0.370 | uncertain (leans AI but conf < 0.50) |
+| 0.61 | 0.90 | 0.799 | 0.29 | 0.510 | likely_ai (crude/templated AI, signals broadly agree) |
+| 0.41 | 0.88 | 0.716 | 0.47 | 0.330 | uncertain (rich-vocab AI; stylometry disagrees → honest uncertain) |
 
 **How we'll test that scores are meaningful (M4):** run a fixed corpus of
 clearly-human samples (published poems/essays), clearly-AI samples (raw model
@@ -208,7 +214,7 @@ Specific scenarios this system handles poorly, and what we do about each:
    drives `confidence` down and the verdict to **uncertain**, not `likely_ai`.
    This is the core false-positive scenario (traced in §Architecture narrative).
 
-2. **Very short submissions (< ~40 words / 2–3 sentences).** Stylometric
+2. **Very short submissions (< ~25 words / 2–3 sentences).** Stylometric
    statistics are unstable — TTR trivially approaches 1.0, variance is
    meaningless with 2 sentences. **Mitigation:** below a minimum token threshold
    we down-weight / flag the stylometric signal and cap confidence at LOW so we
