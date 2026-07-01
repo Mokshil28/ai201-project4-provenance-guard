@@ -5,3 +5,4 @@ __pycache__/
 .env
 *.db
 provenance.db
+server.log
