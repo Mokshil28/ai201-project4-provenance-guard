@@ -26,9 +26,13 @@ in different ways, which is exactly why combining them beats either alone.
 
 | Sub-metric | Definition | AI tends to… | Human tends to… |
 |---|---|---|---|
-| Sentence-length variance | std-dev of words-per-sentence, normalized | be uniform (low variance) | be bursty (high variance) |
-| Type-token ratio (TTR) | unique words ÷ total words | sit in a safe mid-range | be more extreme (very high or low) |
+| Sentence-length variance | coefficient of variation of words-per-sentence | be uniform (low CV) | be bursty (high CV) |
+| Type-token ratio (TTR) | unique words ÷ total words | be repetitive / low diversity (low TTR) | use diverse vocabulary (high TTR) |
 | Punctuation density & variety | punctuation marks per word + count of distinct mark types | be regular, few mark types | be idiosyncratic (dashes, semicolons) |
+
+Each sub-metric maps **monotonically** to an "AI-likeness" contribution in `[0,1]`
+(higher = more AI-like): uniform sentences, repetitive vocabulary, and few
+punctuation-mark types all push the score up.
 
 **Output.** A float `s_stylo ∈ [0, 1]`, where **higher = more AI-like**, plus the
 raw sub-metric values for the audit log:
